@@ -30,7 +30,6 @@ This is mainly running the treatment simulation and loading and manipulating dat
 #include "treatment.hpp"
 #include "rxunit.hpp"
 
-
 class RxGamingRxUnit : public rxtools::RxUnit {
 public:
     lapis::Raster<int> mhm;

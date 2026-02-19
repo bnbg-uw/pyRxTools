@@ -19,6 +19,10 @@ cpprxgaming.cpp
 #include <chrono>
 #include <ctime>
 
+//windows.h namespace pollution collides with lapis::ExtractMethod.
+#undef near
+
+
 static std::vector<lapis::MultiPolygon> rxQ;
 
 static bool lidarInit = FALSE;
@@ -26,8 +30,9 @@ static bool allomInit = FALSE;
 static bool preProcessInit = FALSE;
 static bool rxInit = FALSE;
 std::unique_ptr<processedfolder::ProcessedFolder> lidarDataset;
+static rxtools::TaoGettersPt getters;
 static std::vector<RxGamingRxUnit> rxs;
-static rxtools::allometry::UnivariateLinearModel allometry;
+static rxtools::allometry::UnivariateLinearModel dbhModel;
 
 static std::default_random_engine dre;
 static rxtools::Treatment treater;
@@ -50,6 +55,14 @@ void setSeed(int n) {
 bool initLidarDataset(char* path) {
     try {
         lidarDataset = processedfolder::readProcessedFolder(path);
+        getters = rxtools::TaoGettersPt(
+            lapis::lico::alwaysAdd<lapis::VectorDataset<lapis::Point>>,
+            lidarDataset->coordGetter(),
+            lidarDataset->heightGetter(),
+            lapis::lico::FixedRadius<lapis::VectorDataset<lapis::Point>>(3),
+            lidarDataset->areaGetter(),
+            [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f) { return 0.0; } need to get dbh set correctly
+        );
     }
     catch (std::exception e) {
         std::cerr << "Failed to read the lidar dataset. Is it properly formatted?\n";
@@ -173,14 +186,7 @@ void doPreProcessing(int nThread) {
 
 void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& mut, int& sofar, const double canopycutoff,
     const double coregapdist, std::pair<lapis::coord_t, lapis::coord_t> expectedRes) {
-    rxtools::TaoGettersPt getters(
-        lapis::lico::alwaysAdd<lapis::VectorDataset<lapis::Point>>,
-        lidarDataset->coordGetter(),
-        [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f) { return f.getRealField("height"); },
-        [coregapdist](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f) { return coregapdist; },
-        [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f) { return 0.0; },
-        [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f) { return 0.0; }
-    );
+    
     //auto dist = 3 * lidarDataset.getConvFactor();
     //auto fixedRadius = [dist](lico::Tao& t) { t.crown = dist; };
     //areaproc::crownFunc cf = areaproc::crownFunc(fixedRadius);
@@ -236,11 +242,11 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                             usedTiles.emplace(s);
                         }
 
-                        rxtools::TaoListPt thisTaos{ lidarDataset->highPoints(j) };
+                        rxtools::TaoListPt thisTaos{ lidarDataset->highPoints(j)->string(), getters };
                         for (int k = 0; k < thisTaos.size(); k++) {
                             if (poly.boundingBox().contains(thisTaos.x(k), thisTaos.y(k))) {
                                 if (poly.containsPoint(lapis::Point(thisTaos.x(k), thisTaos.y(k), thisMhm.crs()))) {
-                                    taos.addTAO(thisTaos[k]);
+                                    taos.taoVector.addFeature(thisTaos.taoVector.getFeature(k));
                                 }
                             }
                         }
@@ -317,17 +323,35 @@ void getTaos(int idx, double* outData) {
 }
 
 void setTaos(int idx, double* taoData, int size) {
-    rxtools::TaoListPt taos;
+    rxtools::TaoGettersPt g(
+        lapis::lico::alwaysAdd<lapis::VectorDataset<lapis::Point>>,
+        [](const lapis::ConstFeature<lapis::Point>& ft)->lapis::CoordXY {
+            return { ft.getNumericField<lapis::coord_t>("X"), ft.getNumericField<lapis::coord_t>("Y") };
+        },
+        [](const lapis::ConstFeature<lapis::Point>& ft)->lapis::coord_t {
+            return ft.getNumericField<lapis::coord_t>("Height");
+        },
+        lapis::lico::FixedRadius<lapis::VectorDataset<lapis::Point>>(3),
+        [](const lapis::ConstFeature<lapis::Point>& ft)->lapis::coord_t {
+            return ft.getNumericField<lapis::coord_t>("Area");
+        },
+        dbhgetter
+    );
+    lapis::VectorDataset<lapis::Point> pts;
+    pts.addNumericField<lapis::coord_t>("X");
+    pts.addNumericField<lapis::coord_t>("Y");
+    pts.addNumericField<lapis::coord_t>("Height");
+    pts.addNumericField<lapis::coord_t>("Area");
+
     for (size_t i = 0; i < size / 5; ++i) {
-        lico::Tao t = lico::Tao(
-            taoData[5 * i], //x - 0
-            taoData[5 * i + 1], //y - 1
-            taoData[5 * i + 3], //height - 2
-            taoData[5 * i + 4], //crown - 3
-            taoData[5 * i + 2]); //area - 4
-        taos.addTAO(t);
+        lapis::Point p = lapis::Point(taoData[5 * i], taoData[5 * i + 1]);
+        pts.addGeometry(p);
+        pts.back().setNumericField("X", taoData[5 * i]);
+        pts.back().setNumericField("Y", taoData[5 * i + 1]);
+        pts.back().setNumericField("Height", taoData[5 * i + 3]);
+        pts.back().setNumericField("Area", taoData[5 * i + 2]);
     }
-    rxs[idx].taos = taos;
+    rxs[idx].taos = rxtools::TaoListPt(pts, getters);
 }
 
 void setMhm(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT) {
@@ -486,25 +510,28 @@ void getMask(int idx, int* outData, int naValue) {
 };
 
 void setAllometry(double intercept, double slope, int transform) {
-    allometry.model.intercept = intercept;
-    allometry.model.slope = slope;
-    allometry.model.responseName = "DIA";
+    
+    dbhModel.parameters.intercept = intercept;
+    dbhModel.parameters.slope = slope;
     // 0 = none
     // 1 = square
     // 2 = cube
     // 3 = log-log
     // 4 = suggest
-    allometry.model.transform = (stats::Transform)transform;
-    allometry.model.init = true;
-    dbhFunc = [&](lico::adapt_type<spatial::unit_t> ht) {return allometry.getDbhFromHeightAuto(ht); };
+    dbhModel.parameters.transform = (rxtools::allometry::UnivariateLinearModel::Transform)transform;
+    dbhModel.inputUnit = lapis::linearUnitPresets::internationalFoot;
+    dbhModel.outputUnit = rxtools::linearUnitPresets::inch;
+
+    //the model internally is in  feet and inches, but we want to predict on meters and cm in our getter.
+    getters.dbh = [dm = dbhModel, hg = getters.height](const lapis::ConstFeature<lapis::Point>& ft)->double {
+        return dm.predict(hg(ft), lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+        };
     allomInit = TRUE;
 }
 
-void setAllometryFiaPath(char* path) {
-    allometry.fiaPath = path;
-}
+int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
+    auto reader = rxtools::allometry::FIAReader(fiaPath);
 
-int setAllometryWkt(char* wkt, char* crsWkt) {
     lapis::MultiPolygon poly;
     try {
         OGRGeometry* poGeom;
@@ -520,42 +547,40 @@ int setAllometryWkt(char* wkt, char* crsWkt) {
         throw e;
     }
 
-    auto allPlots = stats::FIALeastSquares::getPlotList(allometry.fiaPath);
-    allometry.model = stats::FIALeastSquares(allPlots, allometry.fiaPath, "DIA");
-
-    
-    auto conv = lidarDataset->getConvFactor();
-    std::cout << conv << "\n";
+    auto dist = lidarDataset->units().value().convertOneToThis(10000, lapis::linearUnitPresets::meter);
     lapis::Extent e(
-        poly.boundingBox().xmin() - 10000 * conv,
-        poly.boundingBox().xmax() + 10000 * conv,
-        poly.boundingBox().ymin() - 10000 * conv,
-        poly.boundingBox().ymax() + 10000 * conv,
+        poly.boundingBox().xmin() - dist,
+        poly.boundingBox().xmax() + dist,
+        poly.boundingBox().ymin() - dist,
+        poly.boundingBox().ymax() + dist,
         poly.crs());
     std::cout << poly.crs().getPrettyWKT() << "\n";
-    auto n = allometry.model.limitByExtent(e);
+    auto n = reader.limitByExtent(e);
     if (!n) {
         std::cout << "no fia plots in buffered extent of project area; aborting";
         throw std::runtime_error("no fia plots in buffered extent of project area");
     }
 
-    allometry.model.initializeModel();
-    dbhFunc = [&](lico::adapt_type<spatial::unit_t> ht) {return allometry.getDbhFromHeightAuto(ht); };
-
+    reader.makePlotTreeMap(std::vector<std::string>{ "DIA" });
+    auto allTrees = reader.collapsePlotTreeMap();
+    dbhModel = rxtools::allometry::UnivariateLinearModel(allTrees, "DIA", rxtools::linearUnitPresets::inch);
+    getters.dbh = [dm = dbhModel, hg = lidarDataset->heightGetter()](const lapis::ConstFeature<lapis::Point>& ft)->double {
+        return dm.predict(hg(ft), lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+        };
     allomInit = TRUE;
     return(n);
 }
 
 void getAllometry(double* intercept, double* slope, int* transform) {
-    *intercept = allometry.model.intercept;
-    *slope = allometry.model.slope;
-    *transform = (int)allometry.model.transform;
+    *intercept = dbhModel.parameters.intercept;
+    *slope = dbhModel.parameters.slope;
+    *transform = (int)dbhModel.parameters.transform;
 }
 
 //metric in, metric out
 void getDbhFromHeight(double* height, double* dbh, int size) {
     for (int i = 0; i < size; ++i) {
-        dbh[i] = allometry.getDbhFromHeightAuto(height[i]);
+        dbh[i] = dbhModel.predict(height[i], lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
     }
 }
 
@@ -567,7 +592,10 @@ void getCurrentStructure(int idx, double* ba, double* tph, double* mcs, double* 
 }
 
 void calcCurrentStructure(int idx) {
-    rxs[idx].currentStructure = rxtools::StructureSummary(rxs[idx].taos, align, rxs[idx].areaHa);
+    rxs[idx].currentStructure = rxtools::StructureSummary(
+        rxs[idx].taos,
+        lapis::Alignment((lapis::Extent)rxs[idx].unitMask, 1, 1),
+        rxs[idx].areaHa);
 }
 
 void setTargetStructure(int idx, double ba, double tph, double mcs, double cc) {
@@ -582,11 +610,11 @@ void getTargetStructure(int idx, double* ba, double* tph, double* mcs, double* c
 }
 
 void getRawClumps(int idx, int* ids) {
-    auto nd = lico::SparseDistMatrix();
-    nd.nearDist(rxs[idx].taos.x(), rxs[idx].taos.y(), rxs[idx].taos.crown(), false);
-    auto cl = nd.getClumps(rxs[idx].taos.size());
-    for (size_t i = 0; i < cl.clumpID.size(); ++i) {
-        ids[i] = cl.clumpID[i];
+    lapis::lico::GraphLico g{ lapis::Alignment((lapis::Extent)rxs[idx].unitMask, 1, 1) };
+    g.addDataset(rxs[idx].taos.taoVector, rxs[idx].taos.nodeFactory, lapis::lico::NodeStatus::on);
+
+    for (size_t i = 0; i < g.nodes.size(); ++i) {
+        ids[i] = g.nodes[i].findAncestor().index;
     }
 }
 
@@ -597,7 +625,7 @@ void makeClumpMap(int idx, int* groupsizes, int* outData, int naValue) {
         std::unordered_map<int, int> taoIds;
 
         for (size_t i = 0; i < rxs[idx].taos.size(); ++i) {
-            auto e = b.extract(rxs[idx].taos.x(i), rxs[idx].taos.y(i));
+            auto e = b.extract(rxs[idx].taos.x(i), rxs[idx].taos.y(i), lapis::ExtractMethod::near);
             if (e.has_value() && e.value() != 1) {
                 taoIds.emplace(std::make_pair(e.value(), groupsizes[i]));
             }
@@ -633,15 +661,15 @@ void makeClumpMap(int idx, int* groupsizes, int* outData, int naValue) {
 void getSimulatedStructures(int idx, double bbDbh, double* out) {
     try {
         auto rx = rxs[idx];
+        auto align = lapis::Alignment((lapis::Extent)rx.unitMask, 1, 1);
 
         std::vector<rxtools::StructureSummary> structures;
 
-        auto dbh = dbhFunc(rx.taos.height());
         std::deque<size_t> notBBbase;
-        lico::TaoList base;
+        rxtools::TaoListPt base(rx.taos, true);
         for (size_t i = 0; i < rx.taos.size(); i++) {
-            if (dbh[i] >= bbDbh) {
-                base.addTAO(rx.taos[i]);
+            if (rx.taos.dbh(i) >= bbDbh) {
+                base.taoVector.addFeature(rx.taos.taoVector.getFeature(i));
             }
             else
             {
@@ -664,7 +692,7 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
             while (testTaos.size() < limit && notBBidx.size()) {
                 auto idx = notBBidx.back();
                 notBBidx.pop_back();
-                testTaos.addTAO(rx.taos[idx]);
+                testTaos.taoVector.addFeature(rx.taos.taoVector.getFeature(idx));
             }
             //osi = getOsi(testTaos);
             osi = 1;
@@ -680,7 +708,7 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
             while (testTaos.size() < limit && notBBidx.size()) {
                 auto idx = notBBidx.front();
                 notBBidx.pop_front();
-                testTaos.addTAO(rx.taos[idx]);
+                testTaos.taoVector.addFeature(rx.taos.taoVector.getFeature(idx));
             }
             //osi = getOsi(testTaos);
             osi = 2;
@@ -697,7 +725,7 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
             while (testTaos.size() < limit && notBBidx.size()) {
                 auto idx = notBBidx.back();
                 notBBidx.pop_back();
-                testTaos.addTAO(rx.taos[idx]);
+                testTaos.taoVector.addFeature(rx.taos.taoVector.getFeature(idx));
             }
             //osi = getOsi(testTaos);
             osi = 3;
@@ -720,11 +748,14 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
 void doTreatment(int idx, double dbhMin, double dbhMax) {
     if (!rxInit) throw std::runtime_error("Rx not init");
     try {
-        auto trt =  treater.doTreatmentGraph(rxs[idx], dbhMin, dbhMax, 10, false, "E:/dropbox/rxgaming paper/treatmentvisual/data/");
+        auto trt =  treater.doTreatment(rxs[idx], dbhMin, dbhMax, 10, false, "E:/dropbox/rxgaming paper/treatmentvisual/data/");
         rxs[idx].treatedTaos = std::get<0>(trt);
         rxs[idx].cutTaos = std::get<1>(trt);
         rxs[idx].result = std::get<2>(trt);
-        rxs[idx].treatedStructure = rxs[idx].summarizeStructure(rxs[idx].treatedTaos, 0, dbhFunc);
+        rxs[idx].treatedStructure = rxtools::StructureSummary(
+            rxs[idx].treatedTaos,
+            lapis::Alignment((lapis::Extent)rxs[idx].unitMask, 1, 1),
+            rxs[idx].areaHa);
     }
     catch (std::exception e) {
         std::cout << e.what();
@@ -736,7 +767,7 @@ void getTreatedChm(int idx, double* outData, double naValue) {
     auto rx = rxs[idx];
     std::unordered_set<int> basinIds;
     for (size_t i = 0; i < rx.treatedTaos.size(); ++i) {
-        auto v = rx.basinMap.extract(rx.treatedTaos.x(i), rx.treatedTaos.y(i));
+        auto v = rx.basinMap.extract(rx.treatedTaos.x(i), rx.treatedTaos.y(i), lapis::ExtractMethod::near);
         if (v.has_value()) {
             basinIds.emplace(v.value());
         }
@@ -829,11 +860,11 @@ void getTreatedStructure(int idx, double* ba, double* tph, double* mcs, double* 
 }
 
 void getTreatedRawClumps(int idx, int* ids) {
-    auto nd = lico::SparseDistMatrix();
-    nd.nearDist(rxs[idx].treatedTaos.x(), rxs[idx].treatedTaos.y(), 6);
-    auto cl = nd.getClumps(rxs[idx].taos.size());
-    for (lico::index_t i = 0; i < cl.clumpID.size(); ++i) {
-        ids[i] = cl.clumpID[i];
+    lapis::lico::GraphLico g{ lapis::Alignment((lapis::Extent)rxs[idx].unitMask, 1, 1) };
+    g.addDataset(rxs[idx].treatedTaos.taoVector, rxs[idx].treatedTaos.nodeFactory, lapis::lico::NodeStatus::on);
+
+    for (size_t i = 0; i < g.nodes.size(); ++i) {
+        ids[i] = g.nodes[i].findAncestor().index;
     }
 }
 
@@ -842,7 +873,7 @@ void getTreatedClumpMap(int idx, int* inData, int inNaValue, int* groupsizes, in
         auto rx = rxs[idx];
         std::unordered_set<int> basinIds;
         for (size_t i = 0; i < rx.treatedTaos.size(); ++i) {
-            auto v = rx.basinMap.extract(rx.treatedTaos.x(i), rx.treatedTaos.y(i));
+            auto v = rx.basinMap.extract(rx.treatedTaos.x(i), rx.treatedTaos.y(i), lapis::ExtractMethod::near);
             if (v.has_value()) {
                 basinIds.emplace(v.value());
             }
