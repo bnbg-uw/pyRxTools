@@ -19,6 +19,12 @@ include(pyRxTools.cmake)
 
 add_library(pyRxTools SHARED ${PYRXTOOLS_SOURCES})
 
+add_custom_command(TARGET pyRxTools POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:pyRxTools>
+        "${CMAKE_SOURCE_DIR}/../src/main/resources/base/bin/pyRxTools.dll"
+)
+
 target_include_directories(pyRxTools PRIVATE ${PYRXTOOLS_EXTERNAL_INCLUDES})
 target_link_libraries(pyRxTools PRIVATE ${PYRXTOOLS_EXTERNAL_LINKS})
 target_compile_definitions(pyRxTools PRIVATE PYRXTOOLS_EXPORTS)
