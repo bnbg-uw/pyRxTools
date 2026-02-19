@@ -12,16 +12,6 @@ cpprxgaming.cpp
 */
 
 #include "pyRxTools.hpp"
-#include "ReadProcessedFolder.hpp"
-#include "allometry.hpp"
-#include "vector.hpp"
-#include "boost/stacktrace.hpp"
-#include <chrono>
-#include <ctime>
-
-//windows.h namespace pollution collides with lapis::ExtractMethod.
-#undef near
-
 
 static std::vector<lapis::MultiPolygon> rxQ;
 
@@ -61,7 +51,7 @@ bool initLidarDataset(char* path) {
             lidarDataset->heightGetter(),
             lapis::lico::FixedRadius<lapis::VectorDataset<lapis::Point>>(3),
             lidarDataset->areaGetter(),
-            [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f) { return 0.0; } need to get dbh set correctly
+            [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f)->double { throw std::runtime_error("dbhgetternotinit"); }
         );
     }
     catch (std::exception e) {
@@ -76,27 +66,33 @@ bool initLidarDataset(char* path) {
 void reprojectPolygon(char* wkt, char* crsWkt, char* outWkt) {
     if (!lidarInit) {
         std::cout << "a" << "\n";
-        throw std::runtime_error("Lidar dataset has not been initialized");
+        fprintf(stderr, "Lidar dataset has not been initialized");
+        std::abort();
     }
     
     OGRGeometry* poGeom;
     auto err = OGRGeometryFactory::createFromWkt(&wkt, nullptr, &poGeom);
-    if (err != OGRERR_NONE)
-        throw std::invalid_argument("Failed to create geom from wkt");
+    if (err != OGRERR_NONE) {
+        fprintf(stderr, "Failed to create geom from wkt");
+        std::abort();
+    }
     auto g = lapis::MultiPolygon(*poGeom, lapis::CoordRef{ crsWkt });
     OGRGeometryFactory::destroyGeometry(poGeom);
 
     auto outcrs = lidarDataset->crs();
     g.projectInPlace(outcrs);
-    strcpy(outWkt, g.gdalGeometry()->exportToWkt().c_str());
+    size_t bufferSize = g.gdalGeometry()->exportToWkt().length() + 1; //this is the value that wants to become the size of the buffer (the +1 is for the null terminator)
+    strcpy_s(outWkt, bufferSize, g.gdalGeometry()->exportToWkt().c_str());
 }
 
 bool queueRx(char* wkt, char* crsWkt) {
     if (lidarInit) {
         OGRGeometry* poGeom;
         auto err = OGRGeometryFactory::createFromWkt(&wkt, nullptr, &poGeom);
-        if (err != OGRERR_NONE)
-            throw std::invalid_argument("Failed to create geom from wkt");
+        if (err != OGRERR_NONE) {
+            fprintf(stderr, "Failed to create geom from wkt");
+            std::abort();
+        }
         auto poly = lapis::MultiPolygon(*poGeom, lapis::CoordRef{ crsWkt });
         OGRGeometryFactory::destroyGeometry(poGeom);
 
@@ -110,19 +106,20 @@ bool queueRx(char* wkt, char* crsWkt) {
             std::cout << "proj poly: " << crsWkt << "\n";
             std::cout << "proj lidar" << lidarDataset->crs().getPrettyWKT();
 
-            throw e;
+            std::abort();
         }
 
         auto mask = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->maskRaster()));
 
-        if (poly.overlaps(mask)) {
+        if (mask.dataOverlapsMultiPolygon(poly)) {
             rxQ.push_back(poly);
             return(true);
         }
         return(false);
     }
     else {
-        throw std::runtime_error("Lidar dataset has not been initialized");
+        fprintf(stderr, "Lidar dataset has not been initialized");
+        std::abort();
     }
 }
 
@@ -158,17 +155,17 @@ void doPreProcessing(int nThread) {
             catch (processedfolder::FileNotFoundException e) {
                 std::cout << e.what() << '\n';
                 std::cout << "Aborting\n";
-                throw e;
+                std::abort();
             }
             catch (lapis::InvalidRasterFileException e) {
                 std::cout << "Error reading file:\n";
                 std::cout << e.what() << '\n';
                 std::cout << "Aborting\b";
-                throw e;
+                std::abort();
             }
             catch (std::exception e) {
                 std::cout << e.what() << '\n';
-                throw e;
+                std::abort();
             }
         };
         for (int i = 0; i < nThread; ++i) {
@@ -179,7 +176,8 @@ void doPreProcessing(int nThread) {
         }
     }
     else {
-        throw std::runtime_error("Lidar dataset has not been initialized");
+        fprintf(stderr, "Lidar dataset has not been initialized");
+        std::abort();
     }
     rxInit = TRUE;
 }
@@ -192,7 +190,6 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
     //areaproc::crownFunc cf = areaproc::crownFunc(fixedRadius);
     auto l = lapis::VectorDataset<lapis::MultiPolygon>(processedfolder::stringOrThrow(lidarDataset->tileLayoutVector()));
     auto mask = lapis::Raster<lapis::cell_t>(processedfolder::stringOrThrow(lidarDataset->maskRaster()));
-    lapis::coord_t chmres = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->watershedSegmentRaster(0))).xres() * lidarDataset->getConvFactor();
 
     while (true) {
         mut.lock();
@@ -212,9 +209,9 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
         std::unordered_set<std::string> usedTiles;
         rxtools::TaoListPt taos;
         try {
-            if (poly.overlaps(mask)) {
+            if (mask.dataOverlapsMultiPolygon(poly)) {
                 for (int j = 0; j < l.nFeature(); j++) {
-                    if (poly.overlaps(lidarDataset->extentByTile(j).value())) {
+                    if (poly.overlapsExtent(lidarDataset->extentByTile(j).value())) {
                         mut.lock();
                         auto thisMhm = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->maxHeightRaster(j)));
                         std::cout << "1";
@@ -243,8 +240,9 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                         }
 
                         rxtools::TaoListPt thisTaos{ lidarDataset->highPoints(j)->string(), getters };
+                        auto polyE = poly.boundingBox();
                         for (int k = 0; k < thisTaos.size(); k++) {
-                            if (poly.boundingBox().contains(thisTaos.x(k), thisTaos.y(k))) {
+                            if (polyE.contains(thisTaos.x(k), thisTaos.y(k))) {
                                 if (poly.containsPoint(lapis::Point(thisTaos.x(k), thisTaos.y(k), thisMhm.crs()))) {
                                     taos.taoVector.addFeature(thisTaos.taoVector.getFeature(k));
                                 }
@@ -309,7 +307,7 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
 
 int nTaos(int idx) {
     std::cout << "Rxs taos size: " << rxs[idx].taos.size() << "\n";
-    return(rxs[idx].taos.size());
+    return((int)rxs[idx].taos.size());
 }
 
 void getTaos(int idx, double* outData) {
@@ -335,7 +333,10 @@ void setTaos(int idx, double* taoData, int size) {
         [](const lapis::ConstFeature<lapis::Point>& ft)->lapis::coord_t {
             return ft.getNumericField<lapis::coord_t>("Area");
         },
-        dbhgetter
+        [dm = dbhModel](const lapis::ConstFeature<lapis::Point>& ft)->double {
+            return dm.predict(ft.getNumericField<lapis::coord_t>("Height"),
+                lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+        }
     );
     lapis::VectorDataset<lapis::Point> pts;
     pts.addNumericField<lapis::coord_t>("X");
@@ -501,7 +502,7 @@ void getMaskMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, doub
 void getMask(int idx, int* outData, int naValue) {
     for (lapis::cell_t i = 0; i < rxs[idx].unitMask.ncell(); ++i) {
         if (rxs[idx].unitMask[i].has_value()) {
-            outData[i] = rxs[idx].unitMask[i].value();
+            outData[i] = (int)rxs[idx].unitMask[i].value();
         }
         else {
             outData[i] = naValue;
@@ -543,8 +544,7 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
     }
     catch (std::exception e) {
         std::cout << e.what() << "\n";
-        std::cout << boost::stacktrace::stacktrace() << "\n";
-        throw e;
+        std::abort();
     }
 
     auto dist = lidarDataset->units().value().convertOneToThis(10000, lapis::linearUnitPresets::meter);
@@ -558,7 +558,7 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
     auto n = reader.limitByExtent(e);
     if (!n) {
         std::cout << "no fia plots in buffered extent of project area; aborting";
-        throw std::runtime_error("no fia plots in buffered extent of project area");
+        std::abort();
     }
 
     reader.makePlotTreeMap(std::vector<std::string>{ "DIA" });
@@ -568,7 +568,7 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
         return dm.predict(hg(ft), lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
         };
     allomInit = TRUE;
-    return(n);
+    return((int)n);
 }
 
 void getAllometry(double* intercept, double* slope, int* transform) {
@@ -614,7 +614,7 @@ void getRawClumps(int idx, int* ids) {
     g.addDataset(rxs[idx].taos.taoVector, rxs[idx].taos.nodeFactory, lapis::lico::NodeStatus::on);
 
     for (size_t i = 0; i < g.nodes.size(); ++i) {
-        ids[i] = g.nodes[i].findAncestor().index;
+        ids[i] = (int)g.nodes[i].findAncestor().index;
     }
 }
 
@@ -654,7 +654,7 @@ void makeClumpMap(int idx, int* groupsizes, int* outData, int naValue) {
     }
     catch (std::exception e) {
         std::cout << e.what() << "\n";
-        throw e;
+        std::abort();
     }
 }
 
@@ -682,13 +682,15 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
         //double osi = getOsi(testTaos);
         double osi = 0;
         structures.push_back(rxtools::StructureSummary(testTaos, align, rx.areaHa));
-        int step = (rx.taos.size() - testTaos.size()) / 10;
+        size_t step = (rx.taos.size() - testTaos.size()) / 10;
 
         //short to tall.
         for (int i = 1; i < 11; ++i) {
             auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            std::cout << i << " " << ctime(&t) << "\n";
-            int limit = std::min<int>(rx.taos.size(), testTaos.size() + step);
+            char buf[26];
+            ctime_s(buf, sizeof(buf), &t);
+            std::cout << i << " " << buf << "\n";
+            size_t limit = std::min<size_t>(rx.taos.size(), testTaos.size() + step);
             while (testTaos.size() < limit && notBBidx.size()) {
                 auto idx = notBBidx.back();
                 notBBidx.pop_back();
@@ -704,7 +706,7 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
         notBBidx = notBBbase;
         for (int i = 1; i < 11; ++i) {
             auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            int limit = std::min<int>(rx.taos.size(), testTaos.size() + step);
+            size_t limit = std::min<size_t>(rx.taos.size(), testTaos.size() + step);
             while (testTaos.size() < limit && notBBidx.size()) {
                 auto idx = notBBidx.front();
                 notBBidx.pop_front();
@@ -721,7 +723,7 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
         std::shuffle(std::begin(notBBidx), std::end(notBBidx), dre);
         for (int i = 1; i < 11; ++i) {
             auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-            int limit = std::min<int>(rx.taos.size(), testTaos.size() + step);
+            size_t limit = std::min<size_t>(rx.taos.size(), testTaos.size() + step);
             while (testTaos.size() < limit && notBBidx.size()) {
                 auto idx = notBBidx.back();
                 notBBidx.pop_back();
@@ -741,12 +743,15 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
     }
     catch (std::exception e) {
         std::cout << e.what() << "\n";
-        throw e;
+        std::abort();
     }
 }
 
 void doTreatment(int idx, double dbhMin, double dbhMax) {
-    if (!rxInit) throw std::runtime_error("Rx not init");
+    if (!rxInit) {
+        std::cerr << "Rx not init\n";
+        std::abort();
+    }
     try {
         auto trt =  treater.doTreatment(rxs[idx], dbhMin, dbhMax, 10, false, "E:/dropbox/rxgaming paper/treatmentvisual/data/");
         rxs[idx].treatedTaos = std::get<0>(trt);
@@ -759,7 +764,7 @@ void doTreatment(int idx, double dbhMin, double dbhMax) {
     }
     catch (std::exception e) {
         std::cout << e.what();
-        throw(e);
+        std::abort();
     }
 }
 
@@ -821,7 +826,7 @@ void getTreatedBasin(int idx, int* outData, int naValue) {
 }
 
 int getNTreatedTaos(int idx) {
-    return rxs[idx].treatedTaos.size();
+    return (int)rxs[idx].treatedTaos.size();
 }
 
 void getTreatedTaos(int idx, double* outData) {
@@ -835,7 +840,7 @@ void getTreatedTaos(int idx, double* outData) {
 }
 
 int getNCutTaos(int idx) {
-    return rxs[idx].cutTaos.size();
+    return (int)rxs[idx].cutTaos.size();
 }
 
 void getCutTaos(int idx, double* outData) {
@@ -864,7 +869,7 @@ void getTreatedRawClumps(int idx, int* ids) {
     g.addDataset(rxs[idx].treatedTaos.taoVector, rxs[idx].treatedTaos.nodeFactory, lapis::lico::NodeStatus::on);
 
     for (size_t i = 0; i < g.nodes.size(); ++i) {
-        ids[i] = g.nodes[i].findAncestor().index;
+        ids[i] = (int)g.nodes[i].findAncestor().index;
     }
 }
 
@@ -922,7 +927,7 @@ void getTreatedClumpMap(int idx, int* inData, int inNaValue, int* groupsizes, in
     }
     catch (std::exception e) {
         std::cout << e.what() << "\n";
-        throw e;
+        std::abort();
     }
 }
 

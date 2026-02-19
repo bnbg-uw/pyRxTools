@@ -16,19 +16,26 @@ This is mainly running the treatment simulation and loading and manipulating dat
 
 #pragma once
 
-#ifdef CPPRXGAMING_EXPORTS
-#define CPPRXGAMING_API __declspec(dllexport)
+#ifdef PYRXTOOLS_EXPORTS
+#define PYRXTOOLS_API __declspec(dllexport)
 #else
-#define CPPRXGAMING_API __declspec(dllimport)
+#define PYRXTOOLS_API __declspec(dllimport)
 #endif
 
 #include<string>
 #include<mutex>
 #include <unordered_set>
+#include <chrono>
+#include <ctime>
+
 #include "raster.hpp"
 #include "graphlico.hpp"
 #include "treatment.hpp"
 #include "rxunit.hpp"
+#include "ReadProcessedFolder.hpp"
+#include "allometry.hpp"
+#include "vector.hpp"
+
 
 class RxGamingRxUnit : public rxtools::RxUnit {
 public:
@@ -36,7 +43,7 @@ public:
     lapis::Raster<double> chm;
     lapis::Raster<int> basinMap;
     rxtools::TaoListPt cutTaos;
-    rxtools::treatmentResult result;
+    rxtools::treatmentResult result = rxtools::treatmentResult::success;
 
     RxGamingRxUnit(lapis::Raster<lapis::cell_t> mask, lapis::Raster<int> mhm, lapis::Raster<double> chm, lapis::Raster<int> basinMap,
         rxtools::TaoListPt taos, double convFactor) :  RxUnit(mask, taos) {
@@ -48,71 +55,70 @@ public:
     RxGamingRxUnit() = default;
 };
 
-extern "C" CPPRXGAMING_API void setProjDataDirectory(const char* searchpath);
+extern "C" PYRXTOOLS_API void setProjDataDirectory(const char* searchpath);
 
-extern "C" CPPRXGAMING_API void setSeed(int n);
+extern "C" PYRXTOOLS_API void setSeed(int n);
 
-extern "C" CPPRXGAMING_API bool initLidarDataset(char* path);
+extern "C" PYRXTOOLS_API bool initLidarDataset(char* path);
 
-extern "C" CPPRXGAMING_API void reprojectPolygon(char* wkt, char* crsWkt, char* outWkt);
+extern "C" PYRXTOOLS_API void reprojectPolygon(char* wkt, char* crsWkt, char* outWkt);
 
-extern "C" CPPRXGAMING_API bool queueRx(char* wkt, char* crsWkt);
+extern "C" PYRXTOOLS_API bool queueRx(char* wkt, char* crsWkt);
 
-extern "C" CPPRXGAMING_API void doPreProcessing(int nThread);
+extern "C" PYRXTOOLS_API void doPreProcessing(int nThread);
 void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& mut, int& sofar, const double canopycutoff,
     const double coregapdist, std::pair<lapis::coord_t, lapis::coord_t> expectedRes);
 
-extern "C" CPPRXGAMING_API int nTaos(int idx);
-extern "C" CPPRXGAMING_API void getTaos(int idx, double* outData);
-extern "C" CPPRXGAMING_API void setTaos(int idx, double* taoData, int size);
+extern "C" PYRXTOOLS_API int nTaos(int idx);
+extern "C" PYRXTOOLS_API void getTaos(int idx, double* outData);
+extern "C" PYRXTOOLS_API void setTaos(int idx, double* taoData, int size);
 
-extern "C" CPPRXGAMING_API void setMhm(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT);
-extern "C" CPPRXGAMING_API void getMhmMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
-extern "C" CPPRXGAMING_API void getMhm(int idx, int* outData, int naValue);
+extern "C" PYRXTOOLS_API void setMhm(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT);
+extern "C" PYRXTOOLS_API void getMhmMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
+extern "C" PYRXTOOLS_API void getMhm(int idx, int* outData, int naValue);
 
-extern "C" CPPRXGAMING_API void setChm(int idx, double* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, double naValue, char* projWKT);
-extern "C" CPPRXGAMING_API void getChmMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
-extern "C" CPPRXGAMING_API void getChm(int idx, double* outData, double naValue);
+extern "C" PYRXTOOLS_API void setChm(int idx, double* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, double naValue, char* projWKT);
+extern "C" PYRXTOOLS_API void getChmMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
+extern "C" PYRXTOOLS_API void getChm(int idx, double* outData, double naValue);
 
-extern "C" CPPRXGAMING_API void setBasin(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT);
-extern "C" CPPRXGAMING_API void getBasinMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
-extern "C" CPPRXGAMING_API void getBasin(int idx, int* outData, int naValue);
+extern "C" PYRXTOOLS_API void setBasin(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT);
+extern "C" PYRXTOOLS_API void getBasinMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
+extern "C" PYRXTOOLS_API void getBasin(int idx, int* outData, int naValue);
 
-extern "C" CPPRXGAMING_API void setMask(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT);
-extern "C" CPPRXGAMING_API void getMaskMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
-extern "C" CPPRXGAMING_API void getMask(int idx, int* outData, int naValue);
+extern "C" PYRXTOOLS_API void setMask(int idx, int* data, int nrow, int ncol, double xres, double yres, double xmin, double ymin, int naValue, char* projWKT);
+extern "C" PYRXTOOLS_API void getMaskMeta(int idx, int* nrow, int* ncol, double* xres, double* yres, double* xmin, double* ymin, char* projWKT);
+extern "C" PYRXTOOLS_API void getMask(int idx, int* outData, int naValue);
 
-extern "C" CPPRXGAMING_API void setAllometryFiaPath(char* path);
-extern "C" CPPRXGAMING_API void setAllometry(double intercept, double slope, int transform);
-extern "C" CPPRXGAMING_API int setAllometryWkt(char* wkt, char* crsWkt);
-extern "C" CPPRXGAMING_API void getAllometry(double* intercept, double* slope, int* transform);
-extern "C" CPPRXGAMING_API void getDbhFromHeight(double* height, double* dbh, int size);
+extern "C" PYRXTOOLS_API void setAllometry(double intercept, double slope, int transform);
+extern "C" PYRXTOOLS_API int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath);
+extern "C" PYRXTOOLS_API void getAllometry(double* intercept, double* slope, int* transform);
+extern "C" PYRXTOOLS_API void getDbhFromHeight(double* height, double* dbh, int size);
 
-extern "C" CPPRXGAMING_API void getCurrentStructure(int idx, double* ba, double* tph, double* mcs, double* osi, double* cc);
-extern "C" CPPRXGAMING_API void calcCurrentStructure(int idx);
-extern "C" CPPRXGAMING_API void setTargetStructure(int idx, double ba, double tph, double mcs, double osi, double cc);
-extern "C" CPPRXGAMING_API void getTargetStructure(int idx, double* ba, double* tph, double* mcs, double* osi, double* cc);
+extern "C" PYRXTOOLS_API void getCurrentStructure(int idx, double* ba, double* tph, double* mcs, double* cc);
+extern "C" PYRXTOOLS_API void calcCurrentStructure(int idx);
+extern "C" PYRXTOOLS_API void setTargetStructure(int idx, double ba, double tph, double mcs, double cc);
+extern "C" PYRXTOOLS_API void getTargetStructure(int idx, double* ba, double* tph, double* mcs, double* cc);
 
-extern "C" CPPRXGAMING_API void getRawClumps(int idx, int* ids);
-extern "C" CPPRXGAMING_API void makeClumpMap(int idx, int* groupsizes, int* outData, int naValue);
+extern "C" PYRXTOOLS_API void getRawClumps(int idx, int* ids);
+extern "C" PYRXTOOLS_API void makeClumpMap(int idx, int* groupsizes, int* outData, int naValue);
 
-extern "C" CPPRXGAMING_API void getSimulatedStructures(int idx, double bbDbh, double* out);
+extern "C" PYRXTOOLS_API void getSimulatedStructures(int idx, double bbDbh, double* out);
 
 //Do treatment on currently loaded Taos
-extern "C" CPPRXGAMING_API void doTreatment(int idx, double dbhMin, double dbhMax);
-extern "C" CPPRXGAMING_API void getTreatedChm(int idx, double* outData, double naValue);
-extern "C" CPPRXGAMING_API void getTreatedBasin(int idx, int* outData, int naValue);
-extern "C" CPPRXGAMING_API int getNTreatedTaos(int idx);
-extern "C" CPPRXGAMING_API void getTreatedTaos(int idx, double* outData);
-extern "C" CPPRXGAMING_API int getNCutTaos(int idx);
-extern "C" CPPRXGAMING_API void getCutTaos(int idx, double* outData);
-extern "C" CPPRXGAMING_API int getTreatmentResult(int idx);
-extern "C" CPPRXGAMING_API void getTreatedStructure(int idx, double* ba, double* tph, double* mcs, double* osi, double* cc);
-extern "C" CPPRXGAMING_API void getTreatedRawClumps(int idx, int* ids);
-extern "C" CPPRXGAMING_API void getTreatedClumpMap(int idx, int* inData, int inNaValue, int* groupsizes, int* out, int naValue);
+extern "C" PYRXTOOLS_API void doTreatment(int idx, double dbhMin, double dbhMax);
+extern "C" PYRXTOOLS_API void getTreatedChm(int idx, double* outData, double naValue);
+extern "C" PYRXTOOLS_API void getTreatedBasin(int idx, int* outData, int naValue);
+extern "C" PYRXTOOLS_API int getNTreatedTaos(int idx);
+extern "C" PYRXTOOLS_API void getTreatedTaos(int idx, double* outData);
+extern "C" PYRXTOOLS_API int getNCutTaos(int idx);
+extern "C" PYRXTOOLS_API void getCutTaos(int idx, double* outData);
+extern "C" PYRXTOOLS_API int getTreatmentResult(int idx);
+extern "C" PYRXTOOLS_API void getTreatedStructure(int idx, double* ba, double* tph, double* mcs, double* cc);
+extern "C" PYRXTOOLS_API void getTreatedRawClumps(int idx, int* ids);
+extern "C" PYRXTOOLS_API void getTreatedClumpMap(int idx, int* inData, int inNaValue, int* groupsizes, int* out, int naValue);
 
 //export info needed to reconstruct without preprocessing.
-extern "C" CPPRXGAMING_API void setRxsSize(int i);
+extern "C" PYRXTOOLS_API void setRxsSize(int i);
 
-extern "C" CPPRXGAMING_API void setConvFactor(double cf);
-extern "C" CPPRXGAMING_API void getConvFactor(double* cf);
+extern "C" PYRXTOOLS_API void setConvFactor(double cf);
+extern "C" PYRXTOOLS_API void getConvFactor(double* cf);

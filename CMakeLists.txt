@@ -21,7 +21,7 @@ add_library(pyRxTools SHARED ${PYRXTOOLS_SOURCES})
 
 target_include_directories(pyRxTools PRIVATE ${PYRXTOOLS_EXTERNAL_INCLUDES})
 target_link_libraries(pyRxTools PRIVATE ${PYRXTOOLS_EXTERNAL_LINKS})
-target_precompile_headers(pyRxTools PRIVATE ${PYRXTOOLS_DIR}/src/pch.hpp)
+target_compile_definitions(pyRxTools PRIVATE PYRXTOOLS_EXPORTS)
 
 if (MSVC)
 	target_compile_options(pyRxTools PRIVATE /W3 /WX)
