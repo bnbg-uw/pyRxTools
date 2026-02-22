@@ -28,6 +28,7 @@ add_custom_command(TARGET pyRxTools POST_BUILD
 target_include_directories(pyRxTools PRIVATE ${PYRXTOOLS_EXTERNAL_INCLUDES})
 target_link_libraries(pyRxTools PRIVATE ${PYRXTOOLS_EXTERNAL_LINKS})
 target_compile_definitions(pyRxTools PRIVATE PYRXTOOLS_EXPORTS)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT pyRxTools)
 
 if (MSVC)
 	target_compile_options(pyRxTools PRIVATE /W3 /WX)

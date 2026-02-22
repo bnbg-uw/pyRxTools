@@ -6,9 +6,9 @@ You should have received a copy of the GNU General Public License along with thi
 
 Bryce Bartl - Geller
 University of Washington Forest Resilience Lab
-12 / 6 / 2024
+2 / 22 / 2026
 
-cpprxgaming.cpp
+pyRxtools.cpp
 */
 
 #include "pyRxTools.hpp"
@@ -44,19 +44,24 @@ void setSeed(int n) {
 
 bool initLidarDataset(char* path) {
     try {
+        auto x = proj_context_get_database_path(nullptr);
+        std::cout << x << "\n";
+        std::cout << "a\n";
         lidarDataset = processedfolder::readProcessedFolder(path);
+        std::cout << "b\n";
         getters = rxtools::TaoGettersPt(
             lapis::lico::alwaysAdd<lapis::VectorDataset<lapis::Point>>,
             lidarDataset->coordGetter(),
             lidarDataset->heightGetter(),
             lapis::lico::FixedRadius<lapis::VectorDataset<lapis::Point>>(3),
             lidarDataset->areaGetter(),
-            [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f)->double { throw std::runtime_error("dbhgetternotinit"); }
+            [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f)->double { return 0; }
         );
+        std::cout << "c\n";
     }
     catch (std::exception e) {
         std::cerr << "Failed to read the lidar dataset. Is it properly formatted?\n";
-        printf(e.what());
+        std::cout << e.what() << "\n";
         return(FALSE);
     }
     lidarInit = TRUE;
@@ -679,8 +684,6 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
         auto testTaos = base;
         auto notBBidx = notBBbase;
 
-        //double osi = getOsi(testTaos);
-        double osi = 0;
         structures.push_back(rxtools::StructureSummary(testTaos, align, rx.areaHa));
         size_t step = (rx.taos.size() - testTaos.size()) / 10;
 
@@ -696,8 +699,6 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
                 notBBidx.pop_back();
                 testTaos.taoVector.addFeature(rx.taos.taoVector.getFeature(idx));
             }
-            //osi = getOsi(testTaos);
-            osi = 1;
             structures.push_back(rxtools::StructureSummary(testTaos, align, rx.areaHa));
         }
 
@@ -712,8 +713,6 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
                 notBBidx.pop_front();
                 testTaos.taoVector.addFeature(rx.taos.taoVector.getFeature(idx));
             }
-            //osi = getOsi(testTaos);
-            osi = 2;
             structures.push_back(rxtools::StructureSummary(testTaos, align, rx.areaHa));
         }
 
@@ -729,13 +728,11 @@ void getSimulatedStructures(int idx, double bbDbh, double* out) {
                 notBBidx.pop_back();
                 testTaos.taoVector.addFeature(rx.taos.taoVector.getFeature(idx));
             }
-            //osi = getOsi(testTaos);
-            osi = 3;
             structures.push_back(rxtools::StructureSummary(testTaos, align, rx.areaHa));
         }
 
         for (int i = 0; i < structures.size(); ++i) {
-            for (int j = 0; j < 5; ++j) {
+            for (int j = 0; j < 4; ++j) {
                 out[5 * i + j] = structures[i][j];
                 //if (j == 0) std::cout << out[4 * i + j] << "\n";
             }

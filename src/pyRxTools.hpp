@@ -6,9 +6,9 @@ You should have received a copy of the GNU General Public License along with thi
 
 Bryce Bartl - Geller
 University of Washington Forest Resilience Lab
-12 / 6 / 2024
+2 / 22 / 2026
 
-cpprxgaming.h
+pyRxTools.hpp
 This is a .dll that does some of the slower things from the rxgaming tool faster here.
 This is mainly running the treatment simulation and loading and manipulating data from the larger
     lidar datsets.
