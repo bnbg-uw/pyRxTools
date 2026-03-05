@@ -19,7 +19,7 @@ static bool lidarInit = FALSE;
 static bool allomInit = FALSE;
 static bool preProcessInit = FALSE;
 static bool rxInit = FALSE;
-std::unique_ptr<processedfolder::ProcessedFolder> lidarDataset;
+static std::unique_ptr<processedfolder::ProcessedFolder> lidarDataset;
 static rxtools::TaoGettersPt getters;
 static std::vector<RxGamingRxUnit> rxs;
 static rxtools::allometry::UnivariateLinearModel dbhModel;
@@ -31,10 +31,17 @@ static double convFactor;
 
 
 void setProjDataDirectory(const char* searchpath) {
-    proj_context_set_search_paths(nullptr, 1, &searchpath);
+    lapis::setProjDefaultDirectory(searchpath);
 
-    auto x = proj_context_get_database_path(nullptr);
-    std::cout << x << "\n";
+    if(!lapis::isProjDirectorySet()) {
+        std::cout << "Failed to set PROJ data directory. Is the path correct?\n";
+    }
+    if(lapis::projDbExists()) {
+        std::cout << "PROJ database found at: " << lapis::getProjDirectory() << "\n";
+    }
+    else {
+        std::cout << "Failed to find PROJ database. Is the PROJ data directory correct?\n";
+    }
 }
 
 void setSeed(int n) {
@@ -44,23 +51,25 @@ void setSeed(int n) {
 
 bool initLidarDataset(char* path) {
     try {
-        auto x = proj_context_get_database_path(nullptr);
-        std::cout << x << "\n";
         std::cout << "a\n";
         lidarDataset = processedfolder::readProcessedFolder(path);
-        std::cout << "b\n";
-        getters = rxtools::TaoGettersPt(
+        if (!lidarDataset) {
+            std::cout << "Failed: could not parse folder as any known format\n";
+            return FALSE;
+        }
+        std::cout << "bb\n";
+        getters = rxtools::TaoGettersPt{
             lapis::lico::alwaysAdd<lapis::VectorDataset<lapis::Point>>,
             lidarDataset->coordGetter(),
             lidarDataset->heightGetter(),
             lapis::lico::FixedRadius<lapis::VectorDataset<lapis::Point>>(3),
             lidarDataset->areaGetter(),
             [](const lapis::VectorDataset<lapis::Point>::ConstFeatureType& f)->double { return 0; }
-        );
+        };
         std::cout << "c\n";
     }
-    catch (std::exception e) {
-        std::cerr << "Failed to read the lidar dataset. Is it properly formatted?\n";
+    catch (std::exception& e) {
+        std::cout << "Failed to read the lidar dataset. Is it properly formatted?\n";
         std::cout << e.what() << "\n";
         return(FALSE);
     }
@@ -81,6 +90,7 @@ void reprojectPolygon(char* wkt, char* crsWkt, char* outWkt) {
         fprintf(stderr, "Failed to create geom from wkt");
         std::abort();
     }
+
     auto g = lapis::MultiPolygon(*poGeom, lapis::CoordRef{ crsWkt });
     OGRGeometryFactory::destroyGeometry(poGeom);
 
@@ -133,7 +143,9 @@ void doPreProcessing(int nThread) {
         std::cout << "Preprocessing:";
         std::pair<lapis::coord_t, lapis::coord_t> expectedRes{};
         auto units = lidarDataset->units();
+        std::cout << "a\n";
         if (lidarDataset->type() == processedfolder::RunType::fusion) {
+            std::cout << "b\n";
             if(units->name() == "metre") {
                 expectedRes.first = 0.75;
             }
@@ -142,6 +154,8 @@ void doPreProcessing(int nThread) {
             }
         }
         else {
+            std::cout << "c\n";
+            std::cout << lidarDataset->csmAlignment().has_value() << "\n";
             expectedRes.first = lidarDataset->csmAlignment()->xres();
         }
         expectedRes.second = 0;
@@ -213,43 +227,48 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
         std::vector<lapis::Raster<int>> basinMap;
         std::unordered_set<std::string> usedTiles;
         rxtools::TaoListPt taos;
+        bool taosInit = false;
         try {
             if (mask.dataOverlapsMultiPolygon(poly)) {
                 for (int j = 0; j < l.nFeature(); j++) {
-                    if (poly.overlapsExtent(lidarDataset->extentByTile(j).value())) {
-                        mut.lock();
-                        auto thisMhm = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->maxHeightRaster(j)));
-                        std::cout << "1";
+                    auto e = lidarDataset->extentByTile(j);
+                    if (e) {
+                        if (poly.overlapsExtent(e.value())) {
+                            mut.lock();
+                            auto thisMhm = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->maxHeightRaster(j)));
 
-                        mut.unlock();
-                        std::cout << thisMhm.xres() << " " << thisMhm.yres() << "\n";
-                        std::cout << expectedRes.first << " " << expectedRes.second << "\n";
-                        //thisMhm.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
-                        std::cout << "2";
+                            mut.unlock();
+                            std::cout << thisMhm.xres() << " " << thisMhm.yres() << "\n";
+                            std::cout << expectedRes.first << " " << expectedRes.second << "\n";
+                            //thisMhm.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
 
-                        auto thisBasinMap = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->watershedSegmentRaster(j))) + i * 10000;
-                        //thisBasinMap.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
-                        std::cout << "3";
+                            auto thisBasinMap = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->watershedSegmentRaster(j))) + i * 10000;
+                            //thisBasinMap.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
 
-                        thisMhm.defineCRS(mask.crs()); //is this line still needed?
+                            thisMhm.defineCRS(mask.crs()); //is this line still needed?
 
-                        mhm.push_back(thisMhm);
-                        basinMap.push_back(thisBasinMap);
+                            mhm.push_back(thisMhm);
+                            basinMap.push_back(thisBasinMap);
 
-                        auto s = processedfolder::stringOrThrow(lidarDataset->csmRaster(j));
-                        if (std::find(usedTiles.begin(), usedTiles.end(), s) == usedTiles.end()) {
-                            auto thisChm = lapis::Raster<double>(s);
-                            //thisChm.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
-                            chm.push_back(thisChm);
-                            usedTiles.emplace(s);
-                        }
+                            auto s = processedfolder::stringOrThrow(lidarDataset->csmRaster(j));
+                            if (std::find(usedTiles.begin(), usedTiles.end(), s) == usedTiles.end()) {
+                                auto thisChm = lapis::Raster<double>(s);
+                                //thisChm.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
+                                chm.push_back(thisChm);
+                                usedTiles.emplace(s);
+                            }
 
-                        rxtools::TaoListPt thisTaos{ lidarDataset->highPoints(j)->string(), getters };
-                        auto polyE = poly.boundingBox();
-                        for (int k = 0; k < thisTaos.size(); k++) {
-                            if (polyE.contains(thisTaos.x(k), thisTaos.y(k))) {
-                                if (poly.containsPoint(lapis::Point(thisTaos.x(k), thisTaos.y(k), thisMhm.crs()))) {
-                                    taos.taoVector.addFeature(thisTaos.taoVector.getFeature(k));
+                            rxtools::TaoListPt thisTaos{ lidarDataset->highPoints(j)->string(), getters };
+                            if(!taosInit) {
+                                taos = rxtools::TaoListPt(thisTaos, true);
+                                taosInit = true;
+                            }
+                            auto polyE = poly.boundingBox();
+                            for (int k = 0; k < thisTaos.size(); k++) {
+                                if (polyE.contains(thisTaos.x(k), thisTaos.y(k))) {
+                                    if (poly.containsPoint(lapis::Point(thisTaos.x(k), thisTaos.y(k), thisMhm.crs()))) {
+                                        taos.taoVector.addFeature(thisTaos.taoVector.getFeature(k));
+                                    }
                                 }
                             }
                         }
@@ -537,20 +556,21 @@ void setAllometry(double intercept, double slope, int transform) {
 
 int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
     auto reader = rxtools::allometry::FIAReader(fiaPath);
-
+    std::cout << "A\n";
     lapis::MultiPolygon poly;
     try {
         OGRGeometry* poGeom;
         auto err = OGRGeometryFactory::createFromWkt(&wkt, nullptr, &poGeom);
         if (err != OGRERR_NONE)
             throw std::invalid_argument("Failed to create geom from wkt");
-        auto poly = lapis::MultiPolygon(*poGeom, lapis::CoordRef{ crsWkt });
+        poly = lapis::MultiPolygon(*poGeom, lapis::CoordRef{ crsWkt });
         OGRGeometryFactory::destroyGeometry(poGeom);
     }
     catch (std::exception e) {
         std::cout << e.what() << "\n";
         std::abort();
     }
+    std::cout << "B\n";
 
     auto dist = lidarDataset->units().value().convertOneToThis(10000, lapis::linearUnitPresets::meter);
     lapis::Extent e(
@@ -559,7 +579,6 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
         poly.boundingBox().ymin() - dist,
         poly.boundingBox().ymax() + dist,
         poly.crs());
-    std::cout << poly.crs().getPrettyWKT() << "\n";
     auto n = reader.limitByExtent(e);
     if (!n) {
         std::cout << "no fia plots in buffered extent of project area; aborting";
@@ -568,11 +587,13 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
 
     reader.makePlotTreeMap(std::vector<std::string>{ "DIA" });
     auto allTrees = reader.collapsePlotTreeMap();
+    std::cout << "C\n";
     dbhModel = rxtools::allometry::UnivariateLinearModel(allTrees, "DIA", rxtools::linearUnitPresets::inch);
     getters.dbh = [dm = dbhModel, hg = lidarDataset->heightGetter()](const lapis::ConstFeature<lapis::Point>& ft)->double {
         return dm.predict(hg(ft), lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
         };
     allomInit = TRUE;
+    std::cout << "D\n";
     return((int)n);
 }
 
