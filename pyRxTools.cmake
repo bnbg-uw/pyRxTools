@@ -6,6 +6,7 @@ file(GLOB PYRXTOOLS_SOURCES
 	${PYRXTOOLS_DIR}/src/*.hpp
 	${PYRXTOOLS_DIR}/src/*.cpp)
 
+set(LAPISGIS_AUTO_INIT OFF)
 include("${PYRXTOOLS_DIR}/src/rxtools/rxtools.cmake")
 
 set(PYRXTOOLS_EXTERNAL_INCLUDES

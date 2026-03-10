@@ -22,7 +22,7 @@ static bool rxInit = FALSE;
 static std::unique_ptr<processedfolder::ProcessedFolder> lidarDataset;
 static rxtools::TaoGettersPt getters;
 static std::vector<RxGamingRxUnit> rxs;
-static rxtools::allometry::UnivariateLinearModel dbhModel;
+static rxtools::allometry::DbhModel dbhModel;
 
 static std::default_random_engine dre;
 static rxtools::Treatment treater;
@@ -31,7 +31,8 @@ static double convFactor;
 
 
 void setProjDataDirectory(const char* searchpath) {
-    lapis::setProjDefaultDirectory(searchpath);
+    std::cout << "Setting PROJ data directory to: " << searchpath << "\n";
+    lapis::lapisGisInit(searchpath);
 
     if(!lapis::isProjDirectorySet()) {
         std::cout << "Failed to set PROJ data directory. Is the path correct?\n";
@@ -85,7 +86,8 @@ void reprojectPolygon(char* wkt, char* crsWkt, char* outWkt) {
     }
     
     OGRGeometry* poGeom;
-    auto err = OGRGeometryFactory::createFromWkt(&wkt, nullptr, &poGeom);
+    char* wktCopy = wkt;  // OGR advances this, not the original
+    auto err = OGRGeometryFactory::createFromWkt(&wktCopy, nullptr, &poGeom);
     if (err != OGRERR_NONE) {
         fprintf(stderr, "Failed to create geom from wkt");
         std::abort();
@@ -103,7 +105,8 @@ void reprojectPolygon(char* wkt, char* crsWkt, char* outWkt) {
 bool queueRx(char* wkt, char* crsWkt) {
     if (lidarInit) {
         OGRGeometry* poGeom;
-        auto err = OGRGeometryFactory::createFromWkt(&wkt, nullptr, &poGeom);
+        char* wktCopy = wkt;  // OGR advances this, not the original
+        auto err = OGRGeometryFactory::createFromWkt(&wktCopy, nullptr, &poGeom);
         if (err != OGRERR_NONE) {
             fprintf(stderr, "Failed to create geom from wkt");
             std::abort();
@@ -139,7 +142,7 @@ bool queueRx(char* wkt, char* crsWkt) {
 }
 
 void doPreProcessing(int nThread) {
-    if (lidarInit) {
+    if (lidarInit & allomInit) {
         std::cout << "Preprocessing:";
         std::pair<lapis::coord_t, lapis::coord_t> expectedRes{};
         auto units = lidarDataset->units();
@@ -169,7 +172,7 @@ void doPreProcessing(int nThread) {
         
         auto mwThreadFunc = [&](int i) {
             try {
-                rastersAndTaosThread(nThread, i, mut, sofar, 2, 6, expectedRes);
+                rastersAndTaosThread(nThread, i, mut, sofar, expectedRes);
             }
             catch (processedfolder::FileNotFoundException e) {
                 std::cout << e.what() << '\n';
@@ -195,14 +198,14 @@ void doPreProcessing(int nThread) {
         }
     }
     else {
-        fprintf(stderr, "Lidar dataset has not been initialized");
+        fprintf(stderr, "Lidar dataset or allometry has not been initialized");
         std::abort();
     }
+    std::cout << "Preprocessing complete\n";
     rxInit = TRUE;
 }
 
-void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& mut, int& sofar, const double canopycutoff,
-    const double coregapdist, std::pair<lapis::coord_t, lapis::coord_t> expectedRes) {
+void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& mut, int& sofar, std::pair<lapis::coord_t, lapis::coord_t> expectedRes) {
     
     //auto dist = 3 * lidarDataset.getConvFactor();
     //auto fixedRadius = [dist](lico::Tao& t) { t.crown = dist; };
@@ -229,17 +232,20 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
         rxtools::TaoListPt taos;
         bool taosInit = false;
         try {
+            auto before = std::chrono::high_resolution_clock::now();
             if (mask.dataOverlapsMultiPolygon(poly)) {
+                auto after = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Mask overlap check took " << duration.count() << " milliseconds\n";
                 for (int j = 0; j < l.nFeature(); j++) {
                     auto e = lidarDataset->extentByTile(j);
                     if (e) {
                         if (poly.overlapsExtent(e.value())) {
+                            before = std::chrono::high_resolution_clock::now();
                             mut.lock();
                             auto thisMhm = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->maxHeightRaster(j)));
 
                             mut.unlock();
-                            std::cout << thisMhm.xres() << " " << thisMhm.yres() << "\n";
-                            std::cout << expectedRes.first << " " << expectedRes.second << "\n";
                             //thisMhm.repairResolution(expectedRes.first, expectedRes.first, expectedRes.second, expectedRes.second);
 
                             auto thisBasinMap = lapis::Raster<int>(processedfolder::stringOrThrow(lidarDataset->watershedSegmentRaster(j))) + i * 10000;
@@ -249,6 +255,10 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
 
                             mhm.push_back(thisMhm);
                             basinMap.push_back(thisBasinMap);
+                            after = std::chrono::high_resolution_clock::now();
+                            duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                            std::cout << "Tile " << j << " raster reading took " << duration.count() << " milliseconds\n";
+                            before = after;
 
                             auto s = processedfolder::stringOrThrow(lidarDataset->csmRaster(j));
                             if (std::find(usedTiles.begin(), usedTiles.end(), s) == usedTiles.end()) {
@@ -257,6 +267,11 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                                 chm.push_back(thisChm);
                                 usedTiles.emplace(s);
                             }
+
+                            after = std::chrono::high_resolution_clock::now();  
+                            duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                            std::cout << "Tile " << j << " CHM reading took " << duration.count() << " milliseconds\n";
+                            before = after;
 
                             rxtools::TaoListPt thisTaos{ lidarDataset->highPoints(j)->string(), getters };
                             if(!taosInit) {
@@ -271,10 +286,15 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                                     }
                                 }
                             }
+                            after = std::chrono::high_resolution_clock::now();
+                            duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                            std::cout << "Tile " << j << " taos took " << duration.count() << " milliseconds\n";
                         }
                     }
                 } // for(int j = 0;...)
 
+                std::cout << "Merging rasters\n";
+                before = std::chrono::high_resolution_clock::now();
                 auto mergeVectorInt = [](std::vector<lapis::Raster<int>>& v) {
                     std::vector<lapis::Raster<int>*> toMerge;
                     for (int i = 0; i < v.size(); i++) {
@@ -284,6 +304,9 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                 };
                 auto outMhm = mergeVectorInt(mhm);
                 auto outBasin = mergeVectorInt(basinMap);
+                after = std::chrono::high_resolution_clock::now();
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Merging rasters took " << duration.count() << " milliseconds\n";
 
                 auto mergeVectorDouble = [](std::vector<lapis::Raster<double>>& v) {
                     std::vector<lapis::Raster<double>*> toMerge;
@@ -297,14 +320,47 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                 //This line may need to be adapted to the new code?
                 //bigchm = spatial::resampleBilinear(bigchm, bigmhm);
 
+                before = std::chrono::high_resolution_clock::now();
                 auto thisMask = mask;
                 thisMask = lapis::cropRaster(thisMask, outMhm, lapis::SnapType::out);
+                after = std::chrono::high_resolution_clock::now();
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Initial crop took " << duration.count() << " milliseconds\n";
+                before = after;
                 thisMask.maskByMultiPolygon(poly);
+                after = std::chrono::high_resolution_clock::now();
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Masking took " << duration.count() << " milliseconds\n";
+                before = after;
                 thisMask = lapis::trimRaster(thisMask);
+                after = std::chrono::high_resolution_clock::now();
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Trimming took " << duration.count() << " millisecon\n";
+                before = after;
 
-                outMhm.maskByMultiPolygon(poly);
-                outChm.maskByMultiPolygon(poly);
-                outBasin.maskByMultiPolygon(poly);
+                //outMhm.maskByMultiPolygon(poly);
+                //outChm.maskByMultiPolygon(poly);
+                //outBasin.maskByMultiPolygon(poly);
+                auto tmp = outMhm;
+                for (lapis::cell_t cell = 0; cell < outMhm.ncell(); ++cell) {
+                    auto x = outMhm.xFromCellUnsafe(cell);
+                    auto y = outMhm.yFromCellUnsafe(cell);
+                    if(((lapis::Extent)thisMask).contains(x,y)) {
+                        if (!thisMask.atXY(outMhm.xFromCellUnsafe(cell),outMhm.yFromCellUnsafe(cell)).has_value()) {
+                            tmp.atCell(cell).has_value() = false;
+                        }
+                        else {
+                            tmp.atCell(cell).has_value() = true;
+                        }
+                    }
+                    else {
+                        tmp.atCell(cell).has_value() = false;
+                    }
+                }
+                outMhm.mask(tmp);
+                outChm.mask(tmp);
+                outBasin.mask(tmp);
+
 
                 outMhm = lapis::trimRaster(outMhm);
                 outChm = lapis::trimRaster(outChm);
@@ -315,7 +371,15 @@ void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& m
                 outBasin = lapis::cropRaster(outBasin, outChm, lapis::SnapType::out);
                 outBasin = lapis::extendRaster(outBasin, outChm, lapis::SnapType::in);
 
-                auto rx = RxGamingRxUnit(thisMask, outMhm, outChm, outBasin, taos, convFactor);
+                after = std::chrono::high_resolution_clock::now();
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Final cropping and extending took " << duration.count() << " milliseconds\n";
+                before = after;
+
+                auto rx = RxGamingRxUnit(thisMask, outMhm, outChm, outBasin, taos);
+                after = std::chrono::high_resolution_clock::now();
+                duration = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+                std::cout << "Creating RxUnit took " << duration.count() << " milliseconds\n";
                 rxs.at(i) = rx;
             }
             else {
@@ -359,7 +423,7 @@ void setTaos(int idx, double* taoData, int size) {
         },
         [dm = dbhModel](const lapis::ConstFeature<lapis::Point>& ft)->double {
             return dm.predict(ft.getNumericField<lapis::coord_t>("Height"),
-                lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+                lapis::linearUnitPresets::meter, lapis::linearUnitPresets::centimeter);
         }
     );
     lapis::VectorDataset<lapis::Point> pts;
@@ -542,14 +606,26 @@ void setAllometry(double intercept, double slope, int transform) {
     // 1 = square
     // 2 = cube
     // 3 = log-log
-    // 4 = suggest
-    dbhModel.parameters.transform = (rxtools::allometry::UnivariateLinearModel::Transform)transform;
+    switch (transform) {
+    case 0:
+        dbhModel.parameters.transform = rxtools::allometry::transforms::none;
+        break;
+    case 1:
+        dbhModel.parameters.transform = rxtools::allometry::transforms::square;
+        break;
+    case 2:
+        dbhModel.parameters.transform = rxtools::allometry::transforms::cube;
+        break;
+    case 3:
+        dbhModel.parameters.transform = rxtools::allometry::transforms::power;
+        break;
+    }
     dbhModel.inputUnit = lapis::linearUnitPresets::internationalFoot;
-    dbhModel.outputUnit = rxtools::linearUnitPresets::inch;
+    dbhModel.outputUnit = lapis::linearUnitPresets::internationalInch;
 
     //the model internally is in  feet and inches, but we want to predict on meters and cm in our getter.
     getters.dbh = [dm = dbhModel, hg = getters.height](const lapis::ConstFeature<lapis::Point>& ft)->double {
-        return dm.predict(hg(ft), lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+        return dm.predict(hg(ft), lapis::linearUnitPresets::meter, lapis::linearUnitPresets::centimeter);
         };
     allomInit = TRUE;
 }
@@ -557,10 +633,12 @@ void setAllometry(double intercept, double slope, int transform) {
 int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
     auto reader = rxtools::allometry::FIAReader(fiaPath);
     std::cout << "A\n";
+    std::cout << crsWkt << "\n";
     lapis::MultiPolygon poly;
     try {
+        char* wktCopy = wkt;  // OGR advances this, not the original
         OGRGeometry* poGeom;
-        auto err = OGRGeometryFactory::createFromWkt(&wkt, nullptr, &poGeom);
+        auto err = OGRGeometryFactory::createFromWkt(&wktCopy, nullptr, &poGeom);
         if (err != OGRERR_NONE)
             throw std::invalid_argument("Failed to create geom from wkt");
         poly = lapis::MultiPolygon(*poGeom, lapis::CoordRef{ crsWkt });
@@ -579,6 +657,8 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
         poly.boundingBox().ymin() - dist,
         poly.boundingBox().ymax() + dist,
         poly.crs());
+    std::cout << "extent: " << e << "\n";
+    std::cout << "proj of extent: " << e.crs().getPrettyWKT() << "\n";
     auto n = reader.limitByExtent(e);
     if (!n) {
         std::cout << "no fia plots in buffered extent of project area; aborting";
@@ -588,9 +668,9 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
     reader.makePlotTreeMap(std::vector<std::string>{ "DIA" });
     auto allTrees = reader.collapsePlotTreeMap();
     std::cout << "C\n";
-    dbhModel = rxtools::allometry::UnivariateLinearModel(allTrees, "DIA", rxtools::linearUnitPresets::inch);
+    dbhModel = rxtools::allometry::DbhModel(allTrees.height, allTrees.get("DIA"), lapis::linearUnitPresets::internationalFoot, lapis::linearUnitPresets::internationalInch);
     getters.dbh = [dm = dbhModel, hg = lidarDataset->heightGetter()](const lapis::ConstFeature<lapis::Point>& ft)->double {
-        return dm.predict(hg(ft), lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+        return dm.predict(hg(ft), lapis::linearUnitPresets::meter, lapis::linearUnitPresets::centimeter);
         };
     allomInit = TRUE;
     std::cout << "D\n";
@@ -600,13 +680,27 @@ int setAllometryWkt(char* wkt, char* crsWkt, char* fiaPath) {
 void getAllometry(double* intercept, double* slope, int* transform) {
     *intercept = dbhModel.parameters.intercept;
     *slope = dbhModel.parameters.slope;
-    *transform = (int)dbhModel.parameters.transform;
+    if (dbhModel.parameters.transform.name == "None") {
+        *transform = 0;
+    }
+    else if (dbhModel.parameters.transform.name == "Square") {
+        *transform = 1;
+    }
+    else if (dbhModel.parameters.transform.name == "Cube") {
+        *transform = 2;
+    }
+    else if (dbhModel.parameters.transform.name == "Power (log-log)") {
+        *transform = 3;
+    }
+    else {
+        *transform = -1; //this should never happen, but just in case
+    }
 }
 
 //metric in, metric out
 void getDbhFromHeight(double* height, double* dbh, int size) {
     for (int i = 0; i < size; ++i) {
-        dbh[i] = dbhModel.predict(height[i], lapis::linearUnitPresets::meter, rxtools::linearUnitPresets::centimeter);
+        dbh[i] = dbhModel.predict(height[i], lapis::linearUnitPresets::meter, lapis::linearUnitPresets::centimeter);
     }
 }
 
@@ -640,7 +734,7 @@ void getRawClumps(int idx, int* ids) {
     g.addDataset(rxs[idx].taos.taoVector, rxs[idx].taos.nodeFactory, lapis::lico::NodeStatus::on);
 
     for (size_t i = 0; i < g.nodes.size(); ++i) {
-        ids[i] = (int)g.nodes[i].findAncestor().index;
+        ids[i] = (int)g.findAncestor(i);
     }
 }
 
@@ -887,7 +981,7 @@ void getTreatedRawClumps(int idx, int* ids) {
     g.addDataset(rxs[idx].treatedTaos.taoVector, rxs[idx].treatedTaos.nodeFactory, lapis::lico::NodeStatus::on);
 
     for (size_t i = 0; i < g.nodes.size(); ++i) {
-        ids[i] = (int)g.nodes[i].findAncestor().index;
+        ids[i] = (int)g.findAncestor(i);
     }
 }
 

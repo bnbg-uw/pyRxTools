@@ -28,13 +28,11 @@ This is mainly running the treatment simulation and loading and manipulating dat
 #include <chrono>
 #include <ctime>
 
-#include "raster.hpp"
 #include "graphlico.hpp"
 #include "treatment.hpp"
 #include "rxunit.hpp"
 #include "ReadProcessedFolder.hpp"
 #include "allometry.hpp"
-#include "vector.hpp"
 
 
 class RxGamingRxUnit : public rxtools::RxUnit {
@@ -46,7 +44,7 @@ public:
     rxtools::treatmentResult result = rxtools::treatmentResult::success;
 
     RxGamingRxUnit(lapis::Raster<lapis::cell_t> mask, lapis::Raster<int> mhm, lapis::Raster<double> chm, lapis::Raster<int> basinMap,
-        rxtools::TaoListPt taos, double convFactor) :  RxUnit(mask, taos) {
+        rxtools::TaoListPt taos) :  RxUnit(mask, taos) {
         this->mhm = mhm;
         this->chm = chm;
         this->basinMap = basinMap;
@@ -66,8 +64,7 @@ extern "C" PYRXTOOLS_API void reprojectPolygon(char* wkt, char* crsWkt, char* ou
 extern "C" PYRXTOOLS_API bool queueRx(char* wkt, char* crsWkt);
 
 extern "C" PYRXTOOLS_API void doPreProcessing(int nThread);
-void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& mut, int& sofar, const double canopycutoff,
-    const double coregapdist, std::pair<lapis::coord_t, lapis::coord_t> expectedRes);
+void rastersAndTaosThread(const int nThread, const int thisThread, std::mutex& mut, int& sofar, std::pair<lapis::coord_t, lapis::coord_t> expectedRes);
 
 extern "C" PYRXTOOLS_API int nTaos(int idx);
 extern "C" PYRXTOOLS_API void getTaos(int idx, double* outData);
